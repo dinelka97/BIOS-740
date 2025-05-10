@@ -1,0 +1,108 @@
+### -- PRODUCE HTML TO HELP WITH SKIMMING THROUGH THE DATA
+
+### -- LIBRARIES
+```{r}
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(glue)
+library(skimr)
+```
+
+### -- LOAD DATA
+```{r}
+df <- read_csv("../../1_Clinical/ADNIMERGE_01Oct2024.csv", col_names = TRUE)
+str(df)
+
+common_ids <- read_csv("../../common_ids.csv") %>% select(ID) %>% pull()## -- complete T1_MRI data (including tabular)
+
+df %<>%
+  filter(RID %in% common_ids)
+
+df %>%
+  select(starts_with('DX')) %>%
+  head()
+
+df %>% 
+  skim()
+
+```
+
+### -- SUBSET DATA TO BL AND ONLY DEMOGRAPHICS
+```{r}
+
+df_sub <-
+  df %>%
+    filter(VISCODE == "bl") %>%
+    select(RID, AGE, DX_bl, PTGENDER, PTETHCAT, PTMARRY, PTRACCAT, APOE4, PTEDUCAT) %>%
+    mutate(across(c(DX_bl, PTGENDER, PTETHCAT, PTRACCAT, PTMARRY), as.factor)) %>%
+    mutate(across(c(RID), as.character)) %>%
+    mutate(across(c(AGE, APOE4, PTEDUCAT)))
+
+df_sub %<>%
+  mutate(DX_bl_v2 = 
+    factor(
+      case_when(
+        DX_bl %in% c('EMCI', 'LMCI') ~ 'MCI',
+        DX_bl == 'SMC' ~ 'CN',
+        TRUE ~ DX_bl
+      )
+    )
+  )
+
+df_sub %>%
+  skim()
+
+df_sub %>%
+  head()
+
+```
+
+### Check out after merging with tabular imaging & one-hot encoding
+
+```{r}
+demo <- readRDS("../../1_Clinical/clinical_sub.RDS")
+global <- read_csv("../../5_T1_MRI/TabularFeature/Global_v2.csv")
+roi_thick <- read_csv("../../5_T1_MRI/TabularFeature/ROI_Thick_v2.csv")
+roi_vol <- read_csv("../../5_T1_MRI/TabularFeature/ROI_VolumeInVoxels_v2.csv")
+
+### -- MAKE SURE ID DTYPES MATCH
+global$ID <- as.character(global$ID)
+roi_thick$ID <- as.character(roi_thick$ID)
+roi_vol$ID <- as.character(roi_vol$ID)
+
+### -- PERFORM THE MERGE
+
+df_list <- list(demo, global, roi_thick, roi_vol)
+
+# Merge by ID using inner_join (only common IDs)
+df_tabular <- reduce(df_list, ~ inner_join(.x, .y, by = "ID", suffix = c("_thick", "_vol")))
+df_tabular %>% head()
+df_tabular %>% dim()
+
+
+### -- STANDARDIZE ALL CONTINUOUS VARIABLES
+
+exclude_cols <- c("APOE4", "PearsonCorr")
+
+df_tabular %<>%
+  mutate(across(
+    where(is.numeric) & 
+      !all_of(exclude_cols) & 
+      where(~ n_distinct(., na.rm = TRUE) > 2),
+    ~ scale(.)[,1]
+  ))
+
+# PRIOR TO EXPORT, BEST TO TAKE A LOOK
+
+missing_thres <- 3.5
+missing_pct <- colMeans(is.na(df_tabular)) * 100
+
+# Keep only columns with <= missing_thres
+df_tabular <- df_tabular[, missing_pct <= missing_thres]
+
+df_tabular %>%
+  skim()
+
+
+```
